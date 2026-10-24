@@ -1,0 +1,51 @@
+프로필 API
+===========
+
+변경 목적
+---------
+Flutter의 닉네임, 기본 정보, MBTI, 언어, 관심 키워드, 소개문, 사진 참조값을 MySQL에 저장·조회한다.
+
+확정한 결정
+------------
+- 프로필은 인증된 현재 사용자만 조회·수정할 수 있다.
+- 사진은 최대 5장이고, DB에는 파일 자체가 아닌 private object key·순서·대표 여부만 저장한다.
+- 로컬 개발 사진 저장소는 Docker Silo(MinIO 호환)의 비공개 `mohano-profile-images` 버킷이다. 운영에서는
+  같은 S3 호환 계약을 Cloudflare R2로 전환한다.
+- 언어와 관심 키워드는 복수 선택이다.
+- 사용자 입력 닉네임과 소개문은 서버가 자동 번역하지 않는다.
+- 모든 이벤트 시각은 서버가 UTC로 저장한다. 프로필에는 앱이 전송한 IANA 시간대만
+  비공개로 저장하며, 상대 프로필 응답에는 포함하지 않는다.
+
+API와 데이터 요구사항
+----------------------
+- `GET /v1/me/profile`, `PATCH /v1/me/profile`
+- `POST /v1/me/profile/photos/upload-requests`,
+  `POST /v1/me/profile/photos/upload-requests/{upload_id}/complete`,
+  `DELETE /v1/me/profile/photos/{photo_id}`
+- profiles(timezone 포함), profile_photos, profile_languages, profile_interests 테이블
+- object key는 `profiles/{user_id}/{photo_id}/original` 형식을 사용한다. 임시 업로드는
+  `staging/{user_id}/{upload_id}/original` 아래에 두고, complete 요청 때 최대 10 MB와 JPEG,
+  PNG, WebP, HEIC/HEIF magic bytes를 검증한 뒤 프로필 key로 copy·이동한다.
+- 앱은 저장소의 장기 access key를 받지 않는다. FastAPI가 인증·사진 수·콘텐츠 정책을 확인한
+  뒤 짧게 만료되는 PUT/GET presigned URL만 발급한다. 버킷은 공개 읽기·쓰기를 허용하지 않는다.
+
+영향 파일
+---------
+- `app/api/v1/profile.py` (Controller), `app/services/database_profile_service.py` (business service)
+- `app/repositories/profile_repository.py`, `app/schemas/profile.py`
+- Flutter 연동: `MOHANO-APP/etc/design/03-profile.txt`
+
+다음 작업 또는 미결정 사항
+---------------------------
+- 텍스트 프로필은 MySQL에 영속하며, 서버는 닉네임 20자, 언어 1~3개, 관심사 3~5개,
+  MBTI 목록, 소개문 180자 제한을 API 경계에서 검증한다. 온보딩 PATCH는 관심사·언어를
+  생략할 수 있다.
+- IANA 시간대는 최대 64자의 허용된 식별자 문자로 검증하며, 로컬 이벤트 표시 기준으로만 쓴다.
+- FastAPI는 boto3로 10분 PUT URL과 15분 GET URL을 발급한다. 앱은 PUT URL로 object storage에
+  직접 전송하므로 장기 access key를 받지 않는다. 사진 삭제 시 storage object를 먼저 제거한 뒤
+  DB reference를 삭제한다.
+- 썸네일/리사이징, staging object lifecycle 정리, EXIF 제거·콘텐츠 심사는 다음 단계에서 추가한다.
+- 서버에는 생년월일만 비공개 저장하고, 다른 사용자에게는 계산한 만 나이만 반환한다.
+  `age_visible`이 false이면 생년월일과 연령 계산값은 매칭에는 계속 사용하되, 공개 프로필과
+  후보 응답의 `age`는 null로 반환한다. 본인 `GET /v1/me/profile` 응답에는 편집을 위해 계산한
+  연령과 `age_visible` 설정을 함께 반환한다.

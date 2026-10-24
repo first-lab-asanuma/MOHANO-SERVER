@@ -1,0 +1,36 @@
+REST 채팅 API
+=============
+
+변경 목적
+---------
+매칭된 사용자가 텍스트 메시지를 저장하고, 앱 화면을 열거나 사용자가 새로고침했을 때 최신
+대화를 REST API로 다시 가져온다.
+
+확정한 결정
+------------
+- WebSocket, 서버 push, 자동 polling은 MVP 범위에 넣지 않는다.
+- 채팅 목록 진입, 대화방 진입, 사용자의 당겨 새로고침에서 GET 요청을 보낸다.
+- 메시지 전송은 `POST`로 즉시 저장하고, 목록은 cursor 기반으로 조회한다.
+- 대화 참여자가 아닌 사용자는 목록과 메시지를 읽거나 쓸 수 없다.
+- 통화 신청이 수락되어 연결 session이 만들어지면, 두 사용자 사이의 채팅을 자동 생성하거나 기존
+  채팅을 재사용한다. 그 채팅에는 `call_connected` 시스템 이벤트를 한 건 남긴다.
+
+API와 데이터 요구사항
+----------------------
+- `GET /v1/chats`
+- `GET /v1/chats/{chat_id}/messages?before={cursor}`
+- `POST /v1/chats/{chat_id}/messages`
+- `POST /v1/chats/{chat_id}/read`
+- conversations, conversation_members, messages 테이블
+
+상세 요청·응답과 공통 규칙은 `07-api-contract.txt`를 기준으로 한다.
+
+현재 구현 상태
+--------------
+- `app/services/chat_service.py`가 사용자별 Yuki 더미 대화방, 텍스트 메시지, 통화 수락으로 생성한
+  대화방과 `call_connected` 시스템 이벤트를 프로세스 메모리에만 유지한다.
+- conversation 테이블과 중복 전송 키 저장은 MySQL 전환 때 구현한다.
+
+다음 작업 또는 미결정 사항
+----------------------------
+- 읽음 상태, 이미지·음성 메시지, 알림, 차단·신고 연동은 이후 결정한다.

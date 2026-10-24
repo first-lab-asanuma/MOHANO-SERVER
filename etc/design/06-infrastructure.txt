@@ -1,0 +1,66 @@
+로컬 MySQL·Silo Docker 구성
+===========================
+
+상태: Docker 구성 파일을 만들었다. 이미지 빌드와 컨테이너 기동은 아직 사용자가 수행하지 않았다.
+
+변경 목적
+---------
+개발자가 로컬 MySQL과 S3 호환 object storage를 직접 설치하지 않고, FastAPI 서버가 사용할
+동일한 문자셋·시간대의 MySQL 및 사진 저장소를 일관되게 준비한다.
+
+확정한 결정
+------------
+- 구성 파일은 `etc/infra`에 둔다. FastAPI 애플리케이션 컨테이너는 아직 만들지 않는다.
+- MySQL 8.4 LTS 이미지를 기반으로 한다.
+- Docker Compose 프로젝트 이름은 `mohano`, MySQL 컨테이너와 로컬 이미지 이름은
+  `mohano-db`로 고정한다.
+- 포트는 기본적으로 `127.0.0.1:3306`에만 열어 외부 네트워크에 노출하지 않는다.
+- DB 데이터는 Docker named volume `mohano_mysql_data`에 유지한다.
+- 문자셋은 `utf8mb4`, collation은 `utf8mb4_0900_ai_ci`, 서버 시간대는 UTC다.
+- 현재 Docker Compose는 로컬 개발 전용이다. DB 이름·계정·포트와 비밀번호 `0000`을
+  `docker-compose.yml`에 고정하고 별도 `etc/infra/.env` 파일을 사용하지 않는다.
+  이 값은 운영 환경이나 외부 네트워크에 노출되는 환경에서 사용하지 않는다.
+- Silo(MinIO 호환)는 S3 API `http://127.0.0.1:9000`, 관리 콘솔 `http://127.0.0.1:9001`만 로컬에
+  열고 `mohano_minio_data` named volume에 데이터를 유지한다. Compose 기동 시 `minio-init`
+  작업이 비공개 `mohano-profile-images` 버킷을 생성한 뒤 종료한다. 서버 이미지는 현재
+  공개 pull 가능한 `pgsty/silo` 이미지와 `pgsty/mc` 클라이언트를 사용한다. Silo는 MinIO의
+  S3 API와 `MINIO_*` 환경 변수를 호환한다.
+- 로컬 Silo root 계정은 개발 편의를 위해 Compose에 `mohano` / `00000000`으로 고정한다. Silo의
+  root password는 8자 이상이어야 한다. 이 계정은
+  운영에서 사용하지 않으며, 운영 Cloudflare R2 access key/secret은 Terraform state·Git·클라이언트에
+  저장하지 않는다.
+- 사진 저장은 S3 호환 object key와 FastAPI 발급 presigned URL을 기준으로 설계한다. 로컬 Silo와
+  운영 Cloudflare R2는 endpoint 및 자격 증명만 달라지고, 버킷과 object key 계약은 유지한다.
+- 로컬 FastAPI와 Silo는 기본적으로 `127.0.0.1:9000`으로 통신한다. USB Android 실기기는
+  Silo presigned URL에도 접근해야 하므로 `adb reverse tcp:9000 tcp:9000`을 추가한다. 앱의
+  VS Code USB 실행 task가 API 8000과 S3 9000을 함께 reverse한다.
+- Flutter Web 로컬 개발은 임의 포트를 사용할 수 있으므로 `localhost`와 `127.0.0.1`의 모든
+  로컬 포트만 허용하는 CORS origin regex를 기본값으로 둔다. 운영에서는 명시 origin으로
+  제한한다.
+
+사용 방법
+---------
+1. `etc/infra`에서 `docker compose up -d --build`를 실행한다.
+2. `minio-init` 컨테이너가 성공 종료한 뒤 `mohano-profile-images` 버킷이 준비된다.
+3. MySQL healthcheck가 통과한 뒤 서버 루트에서 `python -m alembic upgrade head`를 실행한다.
+4. FastAPI를 MySQL로 전환할 때에는 서버 실행 환경의 `MOHANO_DATABASE_URL`을
+   `mysql+pymysql://mohano:0000@127.0.0.1:3306/mohano?charset=utf8mb4`로 설정한다.
+   별도 환경 변수를 설정하지 않은 로컬 개발 환경도 같은 URL을 기본값으로 사용한다.
+
+영향 파일
+---------
+- etc/infra/docker-compose.yml
+- etc/infra/mysql/Dockerfile
+- etc/infra/mysql/conf.d/mohano.cnf
+- app/core/config.py
+- app/main.py
+- alembic/versions/20261023_0001_initial_auth.py
+- alembic/versions/20261023_0002_app_data.py
+
+다음 작업 또는 미결정 사항
+----------------------------
+- 운영 환경의 MySQL 백업, 모니터링, 비밀 값 관리, 외부 네트워크 접근 정책은 별도 설계한다.
+- FastAPI 컨테이너화와 production compose 구성은 로컬 개발 확인 후 결정한다.
+- Cloudflare R2 버킷·lifecycle·custom domain은 운영 인프라 Terraform에서 별도 관리한다.
+- staging object 만료 lifecycle, 썸네일/리사이징, EXIF 제거·콘텐츠 심사, 삭제 실패 object의
+  재시도 정리는 운영 전 확정한다.

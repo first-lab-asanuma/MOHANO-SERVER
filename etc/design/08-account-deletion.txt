@@ -1,0 +1,34 @@
+계정 탈퇴
+=========
+
+목표
+----
+사용자가 설정 메뉴에서 자신의 계정과 개인정보를 명확히 확인한 뒤 탈퇴할 수 있게 한다.
+
+동작
+----
+- Flutter 설정 메뉴의 최하단에 파괴적 동작인 `탈퇴하기`를 둔다.
+- 확인 창에는 프로필 기본 정보, 사진, 언어·MBTI·관심사·소개글, 연결 로그인 정보와 활성 세션이
+  삭제되며 복구할 수 없음을 다국어로 안내한다.
+- 확인 후 앱은 공통 loading 화면을 표시하고 `DELETE /v1/me/account`를 요청한다. 성공하면 기기의
+  보안 세션을 지우고 환영 화면으로 이동한다. 실패하면 현재 계정과 기기 세션을 유지하고 오류를 알린다.
+
+서버 삭제 정책
+-------------
+- 사용자 소유의 profile, profile_languages, profile_interests, profile_photos, match_preferences,
+  저장된 call/chat activity, auth_identities, refresh_sessions를 제거한다.
+- private S3 호환 storage에서 `profiles/{user_id}/` 및 `staging/{user_id}/` 아래의 사진도 먼저 삭제한다.
+  storage 삭제가 실패하면 DB 삭제를 수행하지 않아 사용자가 다시 시도할 수 있다.
+- `users` 행은 물리 삭제하지 않는다. 비식별 내부 ID, `status=deleted`, `deleted_at` UTC만 남긴다.
+  이 행에는 프로필, 이메일, provider subject, 사진 key, refresh token hash를 남기지 않는다.
+- 삭제된 사용자의 access token은 인증 dependency에서 즉시 거부한다. 삭제한 Google identity는
+  나중에 새 계정을 만드는 데 다시 사용할 수 있다.
+
+영향 파일
+---------
+- app/api/v1/account.py
+- app/services/account_service.py
+- app/repositories/account_repository.py
+- app/models/user.py
+- alembic/versions/20261024_0004_account_deletion.py
+- MOHANO-APP/lib/src/features/home/presentation/settings_page.dart

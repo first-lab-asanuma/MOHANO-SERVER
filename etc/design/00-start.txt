@@ -1,0 +1,122 @@
+MOHANO-SERVER 시작 문서
+=======================
+
+상태: 익명 사용자·Google 계정 identity·refresh JWT session·프로필과 기본 후보는 MySQL
+repository로 영속화했다. 매칭 조건·통화·채팅 API는 아직 더미 메모리 저장소로 동작한다.
+
+목표
+----
+`MOHANO-SERVER`는 MOHANO의 인증, 프로필, 매칭, 채팅, 통화 신청을 위한 단일 API
+기준이다. Flutter 앱과 분리해 운영하며, 사용자의 데이터와 권한을 안전하게 관리한다.
+
+확정한 결정
+------------
+- FastAPI와 MySQL을 사용한다.
+- API는 HTTPS JSON REST이며 `/v1`으로 버전 관리한다.
+- 인증은 LINE, Google, Apple OAuth credential을 서버에서 검증한 뒤 발급하는 JWT를 쓴다.
+- access JWT는 짧게 유지하고 refresh JWT는 회전·폐기한다. refresh JWT 원문은 저장하지 않는다.
+- Redis는 초기 범위에 넣지 않는다.
+- 채팅은 실시간 연결 없이 REST로 저장하고, 화면 진입 또는 사용자 새로고침 시 조회한다.
+- 음성 미디어는 WebRTC P2P로 이용자끼리 직접 전송한다. 서버는 미디어 relay를 하지 않는다.
+- 서버는 통화 신청과 짧게 만료되는 SDP·ICE signaling 데이터만 REST polling으로 전달한다.
+- 로컬 개발용 MySQL과 Silo(MinIO 호환) Docker 구성을 `etc/infra`에 둔다. 사진 object storage는
+  로컬에서 Silo, 운영에서 Cloudflare R2를 사용하되 S3 호환 API 계약을 유지한다. 운영 인프라, 배포,
+  Cloudflare R2 계정·Terraform 적용, STUN/TURN 운영은 별도 결정 전까지 구현하지 않는다.
+
+권장 구조
+---------
+    app/
+      main.py
+      api/v1/
+      core/
+      schemas/
+      services/
+      repositories/
+      db/
+    tests/
+
+남은 작업 순서
+----------------
+아래 순서는 Flutter 앱의 `MOHANO-APP/etc/design/00-start.txt`와 동기화한다. 각 단계의 완료
+조건을 확인하기 전에는 다음 단계로 넘어가지 않는다.
+
+01. Google 인증·세션 안정화 (진행 중)
+- Google ID token 교환, 신규/기존 계정, 온보딩 중단 계정, refresh token 회전을 실기기에서 확인한다.
+- `needs_onboarding`은 identity 존재 여부가 아니라 `profiles.onboarding_completed`로 계산한다.
+- 401/403과 provider 검증 실패는 JSON 오류 계약으로 반환하고 credential·JWT는 로그에 남기지 않는다.
+- 로그아웃 API와 refresh session 폐기는 앱 설정 메뉴에 연결했다. 실제 기기에서 폐기 동작을 확인한다.
+
+02. Profile·사진 영속화 (완료)
+- MySQL Profile API와 Flutter 편집 화면의 텍스트 필드는 동기화했고, API 입력 검증도 적용했다.
+- 이벤트 시각은 서버 UTC가 기준이며, 앱이 수집한 IANA 시간대는 비공개 프로필 값으로 저장한다.
+- 사진의 바이너리는 DB에 저장하지 않는다. private S3 호환 storage의 signed upload/download URL을
+  사용하며, 서버에는 object key·순서·대표 여부만 저장한다. 실제 기기 업로드·삭제·재실행 후
+  표시를 확인한다.
+- 사진은 별도 사전 검수 없이 업로드 완료 직후 프로필에 반영하고 상대에게 즉시 노출한다.
+- 계정 삭제는 논리 삭제 사용자 행만 남기고 저장 데이터·사진·연결 identity·세션을 지우도록 구현했다.
+  프로필 공개 정책은 별도로 확정한다.
+
+03. Matching MySQL 전환 (진행 중)
+- `MatchingService`의 조건 저장과 후보 조회는 MySQL repository로 전환했다. 완료한 프로필과
+  활성 사용자만 후보로 조회하고, 본인·탈퇴·온보딩 미완료 사용자는 제외한다.
+- 로컬 환경에서는 기존 4명과 생성형 96명을 합친 100명의 `seed` 후보를 자동으로 만든다.
+  각 후보는 국가·성별·연령·언어·MBTI·관심사·소개를 가지며, 운영 환경에서는 생성하지 않는다.
+- 후보 필터는 1인칭 기준이다. 내 국가·성별·연령 조건만 적용하며, 상대방의 조건은 확인하지 않는다.
+  후보 API는 한 요청에 최대 10명을 반환한다. 새 배치를 요청할 때는 미노출 후보를 먼저, 그다음
+  가장 오래 전에 노출한 후보를 우선하고 동률은 사용자별 일일 랜덤 순서로 정한다.
+- `match_exposures`에 노출·패스 이력을 저장하고 `POST /v1/matches/candidates/{candidate_id}/pass`로
+  패스를 기록한다. 패스는 영구 제외가 아니므로 다음 배치에 다시 노출될 수 있다. 좋아요·상호 매칭은 현재 도입하지 않는다. 통화 요청의 상태
+  영속화와 signaling은 05. Voice signaling 완성 범위에서 MySQL로 전환한다.
+
+04. Chat MySQL 전환
+- 대화, 멤버, 메시지, 읽음 상태를 repository로 전환한다.
+- cursor pagination, 권한 검사, 상대 탈퇴/차단 시 응답 정책을 추가한다.
+- 실시간 WebSocket은 추가하지 않고 REST 새로고침 구조를 유지한다.
+
+05. Voice signaling 완성
+- 통화 요청 수락·거절·취소와 P2P SDP/ICE signal polling을 MySQL 기반으로 구현한다.
+- signal 만료·참여자 권한·통화 종료 정리를 보장한다. 서버는 오디오를 relay하지 않는다.
+- P2P 실패 뒤 TURN 도입 여부는 실기기 검증 결과를 보고 결정한다.
+
+06. Notification·Safety API
+- FCM device token 등록/폐기와 Android FCM, iOS APNs 전달을 추가한다.
+- 매칭 후보는 foreground heartbeat로 판단한 온라인 사용자 또는 통화 알림 동의와 유효한
+  device token을 모두 가진 사용자로 제한한다. heartbeat·동의·token 저장 API와 매칭 필터는
+  구현했으며, 실제 FCM/APNs 발송 연결은 provider credential 설정 뒤 추가한다.
+- 차단, 신고, 정책 동의, 성인 확인, 계정 삭제 API와 운영 데이터 보존 정책을 정의한다.
+- 프로필 사진은 사전 자동 검수·운영자 승인 없이 즉시 노출한다. 신고가 접수된 뒤에만 운영자가
+  숨김·삭제·계정 제한 등의 조치를 할 수 있게 한다.
+- 사진·프로필·메시지 신고 API를 추가한다. 신고 사유, 대상 스냅샷, 신고 시각, 처리 상태와 운영자
+  조치 이력을 보존한다.
+
+07. 운영·iOS 출시 준비
+- HTTPS, CORS, 환경별 secret, migration, health/readiness, 로그 보존·DB 백업을 운영 기준으로 정리한다.
+- iOS Google OAuth와 APNs 설정은 macOS/iOS 빌드 환경에서 별도로 검증한다.
+
+활성 기능 문서
+--------------
+- `01-authentication.txt`
+- `02-profile.txt`
+- `03-matching.txt`
+- `04-chats.txt`
+- `05-voice-call.txt`
+- `09-match-eligibility.txt`
+- `06-infrastructure.txt`
+- `07-api-contract.txt`
+
+현재 구현 범위
+--------------
+- `GET /v1/health`
+- 익명 사용자 생성, Google ID token 교환, access/refresh JWT 발급·갱신·로그아웃
+- 내 프로필·사진 참조값, 매칭 조건·후보, 통화 신청·signaling, REST 채팅·읽음 API
+- 인증 사용자·Google identity·refresh session·프로필은 MySQL에 영속화한다. 매칭 조건,
+  통화 신청·신호, 채팅 데이터는 `app/services/mock_store.py`의 프로세스 메모리에만 존재한다.
+- Alembic migration은 users, auth_identities, refresh_sessions와 프로필·매칭 조건·통화
+  신청·P2P signal·대화·메시지 테이블까지 정의한다. 현재 API는 아직 이를 사용하지 않는다.
+
+구조 원칙
+---------
+- `app/api/v1`은 Spring Boot의 Controller에 해당하며 요청 검증, 인증 의존성, 응답만 맡는다.
+- `app/services`는 기능별 클래스의 business/service 계층이며, 정책·권한·상태 전이를 담당한다.
+- `MockStore`는 임시 repository 역할이다. MySQL 전환 때에는 router가 아니라 service의 저장소
+  의존성만 실제 repository로 교체한다.

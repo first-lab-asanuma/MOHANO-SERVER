@@ -1,0 +1,61 @@
+인증과 JWT 세션
+===============
+
+상태: 익명 JWT 세션과 refresh token 회전·폐기는 MySQL `users`, `refresh_sessions`에
+영속화한다. Google ID token 교환·검증을 구현했으며 LINE·Apple은 구현 전이다.
+
+변경 목적
+---------
+LINE, Google, Apple 계정을 서버에서 검증하고, MOHANO 자체 JWT 세션으로 로그인 상태를
+안전하게 유지한다.
+
+확정한 결정
+------------
+- 이메일/비밀번호와 전화번호 로그인은 제공하지 않는다.
+- Flutter는 provider authorization code 또는 ID token을 서버에 전달한다.
+- 서버는 provider의 issuer, audience, nonce, 만료 시간과 서명을 검증한다. 가입 흐름에서만 사용자와
+  auth identity를 생성하며, 기존 회원 로그인 흐름은 이미 등록된 identity만 조회한다.
+- 서버는 짧은 access JWT와 refresh JWT를 발급한다.
+- refresh JWT는 `jti`를 가지며, DB에는 원문 대신 `jti` 해시, 만료·폐기 시각만 저장한다.
+  MySQL이 timezone 없는 `DATETIME`을 반환하더라도 저장 시각은 UTC로 해석해 현재 UTC
+  시각과 비교한다.
+- refresh 시 새 refresh JWT를 발급하고 이전 session을 폐기한다.
+- 계정의 첫 생성 여부와 온보딩 완료 여부를 분리한다. 토큰 응답의 `is_new_user`는 계정 생성
+  여부이고, `needs_onboarding`은 `profiles.onboarding_completed`를 기준으로 계산한다.
+  온보딩 도중 앱을 나간 사용자는 다음 로그인에서도 반드시 온보딩으로 돌아간다.
+- Google 로그인은 Flutter가 받은 ID token과 `create_account` 의도를
+  `POST /v1/auth/google/exchange`에 전달한다. `프로필 시작하기` 흐름은 새 identity 생성을 허용하지만,
+  `이미 계정이 있어요` 흐름은 기존 identity만 허용하며 없는 계정에는 `404/account_not_found`를 반환한다.
+  서버는 `google-auth`로 Google 서명, issuer, 만료 시각, 그리고
+  `MOHANO_GOOGLE_WEB_CLIENT_ID` audience를 검증한 뒤 `auth_identities`의
+  `provider=google`, `provider_subject=sub`으로 사용자를 조회 또는 생성한다.
+- Google email은 표시·연락 식별자가 아니라 선택적 보조 정보로만 저장한다. 계정의 고유
+  식별자는 변경되지 않는 Google `sub` 값이다.
+- 새 Google 사용자는 `users` 행을 먼저 flush한 뒤 `auth_identities`를 저장한다. 두 테이블의
+  외래 키 관계를 하나의 트랜잭션으로 보장한다.
+
+API와 데이터 요구사항
+----------------------
+- `POST /v1/auth/anonymous`
+- `POST /v1/auth/line/exchange`
+- `POST /v1/auth/google/exchange`
+- `POST /v1/auth/apple/exchange`
+- `POST /v1/auth/refresh`
+- `POST /v1/auth/logout`
+- users, auth_identities, refresh_sessions 테이블
+
+영향 파일
+---------
+- `app/api/v1/auth.py` (Controller), `app/services/auth_service.py` (business service)
+- `app/repositories/auth_repository.py` (MySQL repository)
+- Flutter 연동: `MOHANO-APP/etc/design/01-authentication.txt`
+
+다음 작업 또는 미결정 사항
+----------------------------
+- Google Cloud Console에서 Android OAuth client(package name과 debug/release SHA-1)와
+  서버용 Web OAuth client를 만들고, Web client ID를 FastAPI 환경 변수와 Flutter
+  `MOHANO_GOOGLE_WEB_CLIENT_ID` dart-define에 각각 등록한다.
+- Google 로그인 뒤 익명 사용자 데이터를 계정으로 병합하는 범위를 정한다.
+- Web의 Google 공식 버튼과 iOS Google URL scheme은 각 플랫폼 출시 작업에서 추가한다.
+- 익명 사용자 생성과 소셜 계정 연결 시 데이터 병합 범위를 정한다.
+- access/refresh JWT 만료 시간, signing key 교체 정책, 계정 삭제 유예 기간을 정한다.

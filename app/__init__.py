@@ -1,0 +1,1 @@
+"""MOHANO FastAPI application package."""

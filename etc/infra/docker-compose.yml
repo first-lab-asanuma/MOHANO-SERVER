@@ -1,0 +1,62 @@
+name: mohano
+
+services:
+  mysql:
+    build:
+      context: ./mysql
+    image: mohano-db
+    container_name: mohano-db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: mohano
+      MYSQL_USER: mohano
+      MYSQL_PASSWORD: "0000"
+      MYSQL_ROOT_PASSWORD: "0000"
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - mohano_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  minio:
+    image: docker.io/pgsty/silo:RELEASE.2026-10-18T00-00-00Z
+    container_name: mohano-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      # 로컬 개발 전용 root 계정이다. 운영에는 사용하지 않는다.
+      MINIO_ROOT_USER: mohano
+      MINIO_ROOT_PASSWORD: "00000000"
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - mohano_minio_data:/data
+
+  minio-init:
+    image: docker.io/pgsty/mc:RELEASE.2026-10-18T00-00-00Z
+    container_name: mohano-minio-init
+    depends_on:
+      - minio
+    restart: "no"
+    environment:
+      MINIO_ROOT_USER: mohano
+      MINIO_ROOT_PASSWORD: "00000000"
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        until mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"; do
+          sleep 1
+        done
+        mc mb --ignore-existing local/mohano-profile-images
+        mc anonymous set none local/mohano-profile-images
+
+volumes:
+  mohano_mysql_data:
+  mohano_minio_data:

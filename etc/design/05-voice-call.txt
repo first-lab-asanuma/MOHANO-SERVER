@@ -1,0 +1,49 @@
+P2P 음성 통화 signaling
+========================
+
+변경 목적
+---------
+이용자끼리 WebRTC P2P로 음성을 직접 전송하면서, 서버 부하를 최소화하는 통화 신청과
+연결 신호 전달 API를 만든다.
+
+확정한 결정
+------------
+- `MOHANO-SERVER`는 음성 스트림을 수신·저장·중계하지 않는다.
+- 통화 전후 제어는 call request와 call session REST API로 처리한다.
+- SDP offer/answer와 ICE 후보만 짧은 만료 시간을 둔 REST signaling 데이터로 저장한다.
+- 통화 중 양쪽 앱은 짧은 polling으로 상대 신호를 읽는다. WebSocket은 사용하지 않는다.
+- call session 참여자만 해당 signal을 읽거나 쓸 수 있다.
+- P2P 연결 불가 네트워크에서는 우선 실패를 안내한다. TURN relay는 별도 결정 전에는 넣지 않는다.
+
+API와 데이터 요구사항
+----------------------
+- `GET /v1/call-sessions/{session_id}`
+- `POST /v1/call-sessions/{session_id}/signals`
+- `GET /v1/call-sessions/{session_id}/signals?after={cursor}`
+- `POST /v1/call-sessions/{session_id}/end`
+- call_sessions, call_signals 테이블
+- call_signals에는 sender, type(offer/answer/ice), payload, expires_at, cursor를 둔다.
+
+통화 신청의 조회·수락·거절·취소 API는 `03-matching.txt`, 상세 요청·응답과 공통 규칙은
+`07-api-contract.txt`를 기준으로 한다.
+
+현재 구현 상태
+--------------
+- `app/services/call_service.py`가 call request, call session, signal을 MockStore에만 보관한다.
+- service는 음성 payload를 받지 않으며, signal은 offer/answer/ICE JSON만 받는다.
+- 실제 두 기기 인증, signal 만료 정리와 MySQL 영속은 이후 repository 전환 때 구현한다.
+
+흐름
+----
+1. 요청자가 후보에게 통화 신청을 생성한다.
+2. 상대가 수락하면 서버가 짧게 만료되는 call session을 만들고, 두 사용자 채팅에 통화 연결
+   시스템 이벤트를 남긴다.
+3. 두 앱은 REST API로 SDP·ICE 신호를 교환한다.
+4. WebRTC 연결 후 음성은 두 앱 사이에서 직접 흐른다.
+5. 종료·만료 시 call session과 signal을 정리한다.
+
+다음 작업 또는 미결정 사항
+----------------------------
+- signal polling 주기와 최대 연결 시도 시간을 정한다.
+- STUN 서버 구성 방식과 P2P 실패 시 사용자 안내 문구를 정한다.
+- 제한 네트워크에서의 실패율을 실제 기기에서 확인한 뒤 TURN relay 필요 여부를 재검토한다.
